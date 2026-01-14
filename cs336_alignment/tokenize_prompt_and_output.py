@@ -1,15 +1,18 @@
 import torch
 from transformers import PreTrainedTokenizerBase
 
-def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], tokenizer: PreTrainedTokenizerBase):
+
+def tokenize_prompt_and_output(
+    prompt_strs: list[str], output_strs: list[str], tokenizer: PreTrainedTokenizerBase
+):
     """
     对提示词和输出字符串进行分词，构建响应 tokens 对应的掩码（1 表示响应 tokens，0 表示其他 tokens）。
-    
+
     参数：
         prompt_strs: list[str] - 提示词字符串列表
         output_strs: list[str] - 输出字符串列表
         tokenizer: PreTrainedTokenizer - 用于分词的分词器
-    
+
     返回：
         dict[str, torch.Tensor] - 包含以下键的字典：
             input_ids: 形状为 (batch_size, max(prompt_and_output_lens) - 1) 的张量，
@@ -26,7 +29,11 @@ def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], t
     if batch_size == 0:
         # 空 batch：直接返回空张量，保持接口一致
         empty = torch.empty((0, 0), dtype=torch.long)
-        return {"input_ids": empty, "labels": empty, "response_mask": empty.to(torch.bool)}
+        return {
+            "input_ids": empty,
+            "labels": empty,
+            "response_mask": empty.to(torch.bool),
+        }
 
     # 分别对 prompt 与 output 做分词（按作业要求：分别 tokenize，再进行拼接）
     # 注意这里不加特殊 token，避免 tokenizer 自动插入 BOS/EOS 等导致边界不清晰
@@ -37,9 +44,7 @@ def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], t
     output_ids_list = output_enc["input_ids"]
 
     # padding 使用 pad_token_id；如果 tokenizer 没有定义，则回退到 eos_token_id
-    pad_token_id = tokenizer.pad_token_id
-    if pad_token_id is None:
-        pad_token_id = tokenizer.eos_token_id
+    pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
     if pad_token_id is None:
         raise ValueError("Tokenizer must define pad_token_id or eos_token_id")
 
@@ -53,22 +58,26 @@ def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], t
         full_ids_list.append(list(prompt_ids) + list(output_ids))
 
     # 统一 padding 到 batch 内最大长度（full sequence 的长度）
+    # 先 pad 后去除token，否则会导致有效 token 被误删除
     max_full_len = max((len(ids) for ids in full_ids_list), default=0)
-    padded_full_ids_list: list[list[int]] = []
     for ids in full_ids_list:
         padding_len = max_full_len - len(ids)
-        padded_full_ids_list.append(ids + [pad_token_id] * padding_len)
+        for _ in range(padding_len):
+            ids.append(pad_token_id)
 
     # 将 full token 序列转为张量后，做标准的 causal LM shift：
     # - input_ids: 去掉最后一个 token
     # - labels: 去掉第一个 token（预测下一个 token）
-    full_input = torch.tensor(padded_full_ids_list, dtype=torch.long)
+    full_input = torch.tensor(full_ids_list, dtype=torch.long)
     input_ids = full_input[:, :-1]
     labels = full_input[:, 1:]
 
     seq_len = max(max_full_len - 1, 0)
     response_mask = torch.zeros((batch_size, seq_len), dtype=torch.bool)
-    for i, (prompt_len, output_len) in enumerate(zip(prompt_lens, output_lens, strict=True)):
+    # 掩码是对 labels 而言的
+    for i, (prompt_len, output_len) in enumerate(
+        zip(prompt_lens, output_lens, strict=True)
+    ):
         if output_len <= 0:
             continue
         # response_mask 需要对齐到 labels 的坐标系：
