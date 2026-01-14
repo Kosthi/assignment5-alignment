@@ -46,7 +46,7 @@ def mathd_normalize_answer(answer: Optional[str]) -> Optional[str]:
         if m is not None:
             answer = m.group("text").strip()
         return _strip_string(answer)
-    except:
+    except Exception:
         return answer
 
 
@@ -202,7 +202,7 @@ def _strip_string(string):
                 else:
                     try:
                         assert len(substr) >= 2
-                    except:
+                    except AssertionError:
                         return string
                     a = substr[0]
                     b = substr[1]
@@ -232,7 +232,7 @@ def _strip_string(string):
             assert string == f"{a}/{b}"
             new_string = "\\frac{" + str(a) + "}{" + str(b) + "}"
             return new_string
-        except:
+        except Exception:
             return string
 
     def _remove_right_units(string):
@@ -450,9 +450,9 @@ def normalize_final_answer(final_answer: str) -> str:
 
 
 def repeatness(s: str):
-    def ranks(l):
-        index = {v: i for i, v in enumerate(sorted(set(l)))}
-        return [index[v] for v in l]
+    def ranks(values):
+        index = {v: i for i, v in enumerate(sorted(set(values)))}
+        return [index[v] for v in values]
 
     def suffixArray(s):
         line = ranks(s)
@@ -529,10 +529,10 @@ def symbolic_equal(a, b):
         for f in [parse_latex, parse_expr, latex2sympy]:
             try:
                 return f(s.replace("\\\\", "\\"))
-            except:
+            except Exception:
                 try:
                     return f(s)
-                except:
+                except Exception:
                     pass
         return s
 
@@ -543,27 +543,27 @@ def symbolic_equal(a, b):
     try:
         if str(a) == str(b) or a == b:
             return True
-    except:
+    except Exception:
         pass
 
     # simplify equal
     try:
         if a.equals(b) or simplify(a - b) == 0:
             return True
-    except:
+    except Exception:
         pass
 
     # equation equal
     try:
         if (abs(a.lhs - a.rhs)).equals(abs(b.lhs - b.rhs)):
             return True
-    except:
+    except Exception:
         pass
 
     try:
         if numeric_equal(float(N(a)), float(N(b))):
             return True
-    except:
+    except Exception:
         pass
 
     # matrix
@@ -574,7 +574,7 @@ def symbolic_equal(a, b):
             _b = b.applyfunc(lambda x: round(x, 3))
             if _a.equals(_b):
                 return True
-    except:
+    except Exception:
         pass
 
     return False
@@ -715,7 +715,7 @@ def _is_float(num: str) -> bool:
 def _is_int(x: float) -> bool:
     try:
         return abs(x - int(round(x))) <= 1e-7
-    except:
+    except Exception:
         return False
 
 
@@ -728,7 +728,7 @@ def _str_is_int(x: str) -> bool:
         x = _strip_properly_formatted_commas(x)
         x = float(x)
         return abs(x - int(round(x))) <= 1e-7
-    except:
+    except Exception:
         return False
 
 
@@ -810,7 +810,7 @@ def _normalize(expr: str) -> str:
     if "\\" in expr:
         try:
             expr = _parse_latex(expr)
-        except:
+        except Exception:
             pass
 
     # edge case with mixed numbers and negative signs
@@ -864,7 +864,7 @@ def are_equal_under_sympy(ground_truth_normalized: str, given_normalized: str):
             simplified = sympy.simplify(sympy_diff)
             if simplified == 0:
                 are_equal = True
-    except:
+    except Exception:
         pass
     return are_equal
 
@@ -908,7 +908,7 @@ def last_boxed_only_string(string):
                 break
         i += 1
 
-    if right_brace_idx == None:
+    if right_brace_idx is None:
         retval = None
     else:
         retval = string[idx : right_brace_idx + 1]
@@ -922,7 +922,7 @@ def remove_boxed(s):
         assert s[: len(left)] == left
         assert s[-1] == "}"
         return s[len(left) : -1]
-    except:
+    except Exception:
         return None
 
 

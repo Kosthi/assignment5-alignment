@@ -14,7 +14,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from statistics import mean
 from typing import Any, Callable
 
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
