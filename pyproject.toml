@@ -20,6 +20,8 @@ dependencies = [
     "vllm==0.7.2",
     "wandb>=0.19.8",
     "xopen>=2.0.2",
+    "ruff>=0.14.11",
+    "latex2sympy2-extended>=1.10.1",
 ]
 
 [tool.setuptools.packages.find]
@@ -31,7 +33,7 @@ no-build-isolation-package = ["flash-attn"]
 
 
 [tool.uv.sources]
-alpaca-eval = { git = "https://github.com/nelson-liu/alpaca_eval.git", rev = "forward_kwargs_to_vllm" }
+alpaca-eval = { git = "https://gitee.com/koschei/alpaca_eval.git", rev = "forward_kwargs_to_vllm" }
 
 [tool.pytest.ini_options]
 log_cli = true
