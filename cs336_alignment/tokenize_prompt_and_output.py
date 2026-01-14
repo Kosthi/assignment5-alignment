@@ -24,21 +24,26 @@ def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], t
 
     batch_size = len(prompt_strs)
     if batch_size == 0:
+        # 空 batch：直接返回空张量，保持接口一致
         empty = torch.empty((0, 0), dtype=torch.long)
         return {"input_ids": empty, "labels": empty, "response_mask": empty.to(torch.bool)}
 
+    # 分别对 prompt 与 output 做分词（按作业要求：分别 tokenize，再进行拼接）
+    # 注意这里不加特殊 token，避免 tokenizer 自动插入 BOS/EOS 等导致边界不清晰
     prompt_enc = tokenizer(prompt_strs, add_special_tokens=False)
     output_enc = tokenizer(output_strs, add_special_tokens=False)
 
     prompt_ids_list = prompt_enc["input_ids"]
     output_ids_list = output_enc["input_ids"]
 
+    # padding 使用 pad_token_id；如果 tokenizer 没有定义，则回退到 eos_token_id
     pad_token_id = tokenizer.pad_token_id
     if pad_token_id is None:
         pad_token_id = tokenizer.eos_token_id
     if pad_token_id is None:
         raise ValueError("Tokenizer must define pad_token_id or eos_token_id")
 
+    # 逐样本拼接 full_ids = prompt_ids + output_ids，并记录长度以构造 response_mask
     full_ids_list: list[list[int]] = []
     prompt_lens: list[int] = []
     output_lens: list[int] = []
@@ -47,12 +52,16 @@ def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], t
         output_lens.append(len(output_ids))
         full_ids_list.append(list(prompt_ids) + list(output_ids))
 
+    # 统一 padding 到 batch 内最大长度（full sequence 的长度）
     max_full_len = max((len(ids) for ids in full_ids_list), default=0)
     padded_full_ids_list: list[list[int]] = []
     for ids in full_ids_list:
         padding_len = max_full_len - len(ids)
         padded_full_ids_list.append(ids + [pad_token_id] * padding_len)
 
+    # 将 full token 序列转为张量后，做标准的 causal LM shift：
+    # - input_ids: 去掉最后一个 token
+    # - labels: 去掉第一个 token（预测下一个 token）
     full_input = torch.tensor(padded_full_ids_list, dtype=torch.long)
     input_ids = full_input[:, :-1]
     labels = full_input[:, 1:]
@@ -62,6 +71,11 @@ def tokenize_prompt_and_output(prompt_strs: list[str], output_strs: list[str], t
     for i, (prompt_len, output_len) in enumerate(zip(prompt_lens, output_lens, strict=True)):
         if output_len <= 0:
             continue
+        # response_mask 需要对齐到 labels 的坐标系：
+        # labels[j] 对应 full_input[j+1]
+        # 因此：
+        # - prompt 在 labels 中占据前 (prompt_len - 1) 个位置（full_input 的 prompt 的第 2 个 token 起）
+        # - output 在 labels 中从索引 (prompt_len - 1) 开始，连续 output_len 个位置
         start = max(prompt_len - 1, 0)
         end = min(start + output_len, seq_len)
         response_mask[i, start:end] = True
