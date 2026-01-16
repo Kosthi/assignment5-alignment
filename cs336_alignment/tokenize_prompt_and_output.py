@@ -3,7 +3,10 @@ from transformers import PreTrainedTokenizerBase
 
 
 def tokenize_prompt_and_output(
-    prompt_strs: list[str], output_strs: list[str], tokenizer: PreTrainedTokenizerBase
+    prompt_strs: list[str],
+    output_strs: list[str],
+    tokenizer: PreTrainedTokenizerBase,
+    max_seq_length: int | None = None,
 ):
     """
     对提示词和输出字符串进行分词，构建响应 tokens 对应的掩码（1 表示响应 tokens，0 表示其他 tokens）。
@@ -53,9 +56,22 @@ def tokenize_prompt_and_output(
     prompt_lens: list[int] = []
     output_lens: list[int] = []
     for prompt_ids, output_ids in zip(prompt_ids_list, output_ids_list, strict=True):
+        prompt_ids = list(prompt_ids)
+        output_ids = list(output_ids)
+
+        if max_seq_length is not None and max_seq_length > 0:
+            total_len = len(prompt_ids) + len(output_ids)
+            if total_len > max_seq_length:
+                overflow = total_len - max_seq_length
+                if overflow >= len(prompt_ids):
+                    prompt_ids = []
+                    output_ids = output_ids[:max_seq_length]
+                else:
+                    prompt_ids = prompt_ids[overflow:]
+
         prompt_lens.append(len(prompt_ids))
         output_lens.append(len(output_ids))
-        full_ids_list.append(list(prompt_ids) + list(output_ids))
+        full_ids_list.append(prompt_ids + output_ids)
 
     # 统一 padding 到 batch 内最大长度（full sequence 的长度）
     # 先 pad 后去除token，否则会导致有效 token 被误删除

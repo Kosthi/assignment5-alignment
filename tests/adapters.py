@@ -11,6 +11,7 @@ from cs336_alignment.tokenize_prompt_and_output import tokenize_prompt_and_outpu
 from cs336_alignment.compute_entropy import compute_entropy
 from cs336_alignment.get_response_log_probs import get_response_log_probs
 from cs336_alignment.masked_normalize import masked_normalize
+from cs336_alignment.sft_microbatch_train_step import sft_microbatch_train_step
 
 
 def run_tokenize_prompt_and_output(
@@ -209,7 +210,9 @@ def run_sft_microbatch_train_step(
     normalize_constant: int | None = 1.0,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute the policy gradient loss and backprop its gradients for a microbatch."""
-    raise NotImplementedError
+    return sft_microbatch_train_step(
+        policy_log_probs, response_mask, gradient_accumulation_steps, normalize_constant
+    )
 
 
 def run_grpo_microbatch_train_step(
