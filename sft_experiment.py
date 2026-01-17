@@ -75,6 +75,30 @@ def _format_math_prompt(prompt_template: str, example: dict[str, Any]) -> str:
     return prompt_template.replace("{question}", str(example["problem"]))
 
 
+def _select_eval_examples(
+    eval_examples: list[dict[str, Any]],
+    max_examples: int,
+    sampling_strategy: str,
+    sampling_seed: int,
+    eval_call_index: int,
+) -> list[dict[str, Any]]:
+    if not max_examples or max_examples <= 0 or max_examples >= len(eval_examples):
+        return eval_examples
+
+    if sampling_strategy == "head":
+        return eval_examples[:max_examples]
+
+    rng = random.Random(sampling_seed)
+    if sampling_strategy == "random":
+        rng.seed(sampling_seed + eval_call_index)
+    elif sampling_strategy != "fixed_random":
+        raise ValueError(f"Unknown eval sampling strategy: {sampling_strategy}")
+
+    indices = rng.sample(range(len(eval_examples)), k=max_examples)
+    indices.sort()
+    return [eval_examples[i] for i in indices]
+
+
 class JsonlSFTDataset(Dataset):
     """将已加载的 JSONL 样本包装成 PyTorch Dataset。"""
 
@@ -330,8 +354,18 @@ def train(args: argparse.Namespace) -> None:
     else:
         raise RuntimeError("Provide --eval-math-path")
 
-    if args.eval_max_examples and args.eval_max_examples > 0:
-        eval_examples = eval_examples[: args.eval_max_examples]
+    eval_sampling_seed = (
+        int(args.eval_sampling_seed) if int(args.eval_sampling_seed) != 0 else args.seed
+    )
+    fixed_eval_examples: list[dict[str, Any]] | None = None
+    if args.eval_sampling_strategy == "fixed_random":
+        fixed_eval_examples = _select_eval_examples(
+            eval_examples=eval_examples,
+            max_examples=args.eval_max_examples,
+            sampling_strategy="fixed_random",
+            sampling_seed=eval_sampling_seed,
+            eval_call_index=1,
+        )
 
     prompt_template = (
         Path(args.eval_prompt_template_path).read_text(encoding="utf-8").strip()
@@ -417,10 +451,17 @@ def train(args: argparse.Namespace) -> None:
     if args.eval_before_training:
         if llm is None:
             raise RuntimeError("--eval-before-training requires --use-vllm-eval")
+        eval_subset = fixed_eval_examples or _select_eval_examples(
+            eval_examples=eval_examples,
+            max_examples=args.eval_max_examples,
+            sampling_strategy=args.eval_sampling_strategy,
+            sampling_seed=eval_sampling_seed,
+            eval_call_index=1,
+        )
         eval_result, per_sample = evaluate_policy_with_vllm(
             policy=model,
             llm=llm,
-            eval_examples=eval_examples,
+            eval_examples=eval_subset,
             prompt_template=prompt_template,
             batch_size=args.eval_batch_size,
             max_tokens=args.eval_max_tokens,
@@ -541,10 +582,17 @@ def train(args: argparse.Namespace) -> None:
                     and train_step % args.eval_every_train_steps == 0
                 ):
                     # 评估会将当前 policy 权重同步到 vLLM，再进行批量生成与打分
+                    eval_subset = fixed_eval_examples or _select_eval_examples(
+                        eval_examples=eval_examples,
+                        max_examples=args.eval_max_examples,
+                        sampling_strategy=args.eval_sampling_strategy,
+                        sampling_seed=eval_sampling_seed,
+                        eval_call_index=eval_step + 1,
+                    )
                     eval_result, per_sample = evaluate_policy_with_vllm(
                         policy=model,
                         llm=llm,
-                        eval_examples=eval_examples,
+                        eval_examples=eval_subset,
                         prompt_template=prompt_template,
                         batch_size=args.eval_batch_size,
                         max_tokens=args.eval_max_tokens,
@@ -615,6 +663,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--eval-before-training", action="store_true")
     p.add_argument("--eval-batch-size", type=int, default=128)
     p.add_argument("--eval-max-examples", type=int, default=512)
+    p.add_argument(
+        "--eval-sampling-strategy",
+        type=str,
+        default="fixed_random",
+        choices=["head", "fixed_random", "random"],
+    )
+    p.add_argument("--eval-sampling-seed", type=int, default=0)
     p.add_argument("--eval-max-tokens", type=int, default=1024)
     p.add_argument("--eval-temperature", type=float, default=1.0)
     p.add_argument("--eval-top-p", type=float, default=1.0)
