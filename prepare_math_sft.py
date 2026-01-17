@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+"""
+将 Hendrycks MATH（EleutherAI/hendrycks_math）数据集转换成适用于本作业 SFT 的 JSONL。
+
+输出默认写到 data/MATH/：
+- sft.jsonl：训练用的指令微调样本（含 prompt/response）
+- val.jsonl：可选的评估样本（默认不写，需 --write-eval-jsonl）
+
+训练样本的 response 会被格式化为 r1_zero 风格：
+1) 保留原 solution 的推理过程（去掉最后一个 \\boxed{...}）
+2) 将抽取到的最终答案写到 <answer> 标签内
+"""
+
 import argparse
 import json
 from pathlib import Path
@@ -9,6 +21,11 @@ from cs336_alignment.drgrpo_grader import extract_boxed_answer, last_boxed_only_
 
 
 def _require_datasets():
+    """
+    延迟导入 datasets 依赖。
+
+    这样仓库在未安装 datasets 时也能正常 import 本文件；只有运行脚本时才会报出清晰错误。
+    """
     try:
         from datasets import get_dataset_config_names, load_dataset  # type: ignore
     except Exception as e:
@@ -19,10 +36,12 @@ def _require_datasets():
 
 
 def _read_text(path: str | Path) -> str:
+    """读取文本文件并去掉首尾空白。"""
     return Path(path).read_text(encoding="utf-8").strip()
 
 
 def _write_jsonl(path: str | Path, rows: list[dict[str, Any]]) -> None:
+    """将 rows 逐行写成 JSONL（每行一个 JSON）。"""
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
@@ -31,6 +50,12 @@ def _write_jsonl(path: str | Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _remove_last_boxed(solution: str) -> str:
+    """
+    删除 solution 中最后一次出现的 \\boxed{...}（如果存在）。
+
+    MATH 的 solution 通常在末尾用 \\boxed{...} 标注最终答案；
+    这里保留推理过程（think），把答案留给 <answer> 标签。
+    """
     boxed = last_boxed_only_string(solution)
     if boxed is None:
         return solution.strip()
@@ -43,6 +68,11 @@ def _remove_last_boxed(solution: str) -> str:
 def _convert_train_row(
     problem: str, solution: str, prompt_template: str
 ) -> dict[str, Any] | None:
+    """
+    将一条 MATH 训练样本转换成 SFT 样本。
+
+    返回 None 表示无法从 solution 中抽取 \\boxed{...} 答案（会被跳过）。
+    """
     answer = extract_boxed_answer(solution)
     if answer is None:
         return None
@@ -63,6 +93,11 @@ def _convert_train_row(
 def _convert_eval_row(
     problem: str, solution: str, level: str | None, type_: str | None
 ) -> dict[str, Any] | None:
+    """
+    将一条 MATH 测试样本转换成评估用样本（不包含 prompt/response）。
+
+    评估阶段通常会用独立的生成策略生成 response，然后用 grader 对照 answer 评分。
+    """
     answer = extract_boxed_answer(solution)
     if answer is None:
         return None
@@ -79,6 +114,7 @@ def _convert_eval_row(
 
 
 def _sanity_check_sft_jsonl(path: Path, n: int = 5) -> None:
+    """抽查前 n 条样本，确保 prompt/response 格式符合预期。"""
     checked = 0
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -98,6 +134,7 @@ def _sanity_check_sft_jsonl(path: Path, n: int = 5) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """构建命令行参数解析器。"""
     p = argparse.ArgumentParser()
     p.add_argument(
         "--out-dir",
@@ -131,6 +168,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """脚本入口：下载/读取数据集并写出 JSONL。"""
     args = build_arg_parser().parse_args()
 
     out_dir = Path(args.out_dir)

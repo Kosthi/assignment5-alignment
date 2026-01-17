@@ -1,5 +1,5 @@
-from collections import defaultdict
 import torch
+from cs336_alignment.masked_normalize import masked_normalize
 
 
 def sft_microbatch_train_step(
@@ -24,20 +24,21 @@ def sft_microbatch_train_step(
             loss: 标量张量，调整梯度累积后的微批次损失（用于日志记录）
             metadata: 字典，包含损失计算的元数据及其他需日志记录的统计信息
     """
-    # 交叉熵损失计算、带掩码求和、梯度缩放
-    total_loss = (
-        -torch.sum(policy_log_probs * response_mask, dim=-1) / normalize_constant
+    # 1. 计算交叉熵损失（负对数似然）
+    token_loss = -policy_log_probs
+    # 2. 带掩码求和并归一化
+    masked_loss = masked_normalize(
+        token_loss, response_mask, normalize_constant, dim=-1
     )
-    average_loss = torch.mean(total_loss)
+    # 3. 计算平均 loss
+    average_loss = torch.mean(masked_loss)
+    # 4. 梯度缩放
     scaled_loss = average_loss / gradient_accumulation_steps
-    # 反向传播
+    # 5. 反向传播
     scaled_loss.backward()
 
     metadata = {
-        "total_loss": total_loss,
         "average_loss": average_loss,
-        "response_token_count": response_mask.sum(dim=-1),
-        "normalized_by": normalize_constant,
     }
 
-    return scaled_loss, metadata
+    return scaled_loss.detach(), metadata
