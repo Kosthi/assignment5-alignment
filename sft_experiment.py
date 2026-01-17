@@ -24,6 +24,7 @@ from typing import Any, Iterable
 
 import torch
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 from unittest.mock import patch
@@ -188,7 +189,15 @@ def _stream_filter_correct_sft(
     return {"total": total, "kept": kept}
 
 
-def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float):
+def init_vllm(
+    model_id: str,
+    device: str,
+    seed: int,
+    gpu_memory_utilization: float,
+    max_model_len: int | None,
+    enforce_eager: bool | None,
+    max_num_seqs: int | None,
+):
     """
     创建 vLLM LLM 实例。
 
@@ -207,6 +216,13 @@ def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: flo
         return_value=None,
     )
     with world_size_patch, profiling_patch:
+        llm_kwargs: dict[str, Any] = {}
+        if max_model_len is not None:
+            llm_kwargs["max_model_len"] = int(max_model_len)
+        if enforce_eager is not None:
+            llm_kwargs["enforce_eager"] = bool(enforce_eager)
+        if max_num_seqs is not None:
+            llm_kwargs["max_num_seqs"] = int(max_num_seqs)
         return LLM(
             model=model_id,
             device=device,
@@ -214,6 +230,7 @@ def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: flo
             enable_prefix_caching=True,
             gpu_memory_utilization=gpu_memory_utilization,
             trust_remote_code=True,
+            **llm_kwargs,
         )
 
 
@@ -426,12 +443,25 @@ def train(args: argparse.Namespace) -> None:
 
     llm = None
     if args.use_vllm_eval:
-        # vLLM 评估通常更快，但会额外占用一张卡（vllm_device）。
+        vllm_max_model_len = (
+            int(args.vllm_max_model_len)
+            if args.vllm_max_model_len and int(args.vllm_max_model_len) > 0
+            else int(args.max_seq_length)
+        )
+        vllm_max_num_seqs = (
+            int(args.vllm_max_num_seqs)
+            if args.vllm_max_num_seqs and int(args.vllm_max_num_seqs) > 0
+            else None
+        )
+        enforce_eager: bool | None = True if args.vllm_enforce_eager else None
         llm = init_vllm(
             model_id=args.model_id,
             device=args.vllm_device,
             seed=args.seed,
             gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+            max_model_len=vllm_max_model_len,
+            enforce_eager=enforce_eager,
+            max_num_seqs=vllm_max_num_seqs,
         )
 
     micro_step = 0
@@ -491,7 +521,12 @@ def train(args: argparse.Namespace) -> None:
     last_log_time = time.time()
 
     for epoch in range(args.num_epochs):
-        for batch in dataloader:
+        epoch_pbar = tqdm(
+            dataloader,
+            desc=f"train epoch {epoch + 1}/{args.num_epochs}",
+            total=len(dataloader),
+        )
+        for batch in epoch_pbar:
             micro_step += 1
             # 将 (prompt, response) 拼接后编码；labels 只在 response 部分计算 loss。
             tokenized = tokenize_prompt_and_output(
@@ -576,6 +611,11 @@ def train(args: argparse.Namespace) -> None:
                 log_row(log_payload)
                 if wandb_run is not None:
                     wandb.log(log_payload)
+                epoch_pbar.set_postfix(
+                    train_step=train_step,
+                    loss=f"{train_loss:.4f}",
+                    steps_per_sec=f"{log_payload['train/steps_per_sec']:.3f}",
+                )
                 if (
                     llm is not None
                     and args.eval_every_train_steps > 0
@@ -620,6 +660,11 @@ def train(args: argparse.Namespace) -> None:
         if args.max_train_steps and train_step >= args.max_train_steps:
             break
 
+    save_dir = Path(args.save_model_dir) if args.save_model_dir else run_dir
+    save_dir.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(save_directory=str(save_dir))
+    tokenizer.save_pretrained(save_directory=str(save_dir))
+
     if wandb_run is not None:
         wandb_run.finish()
 
@@ -648,17 +693,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy-device", type=str, default="cuda:0")
     p.add_argument("--microbatch-size", type=int, default=1)
     p.add_argument("--gradient-accumulation-steps", type=int, default=8)
-    p.add_argument("--max-seq-length", type=int, default=2048)
+    p.add_argument("--max-seq-length", type=int, default=4096)
     p.add_argument("--learning-rate", type=float, default=1e-5)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--num-epochs", type=int, default=1)
     p.add_argument("--max-train-steps", type=int, default=0)
-    p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument("--num-workers", type=int, default=1)
     p.add_argument("--gradient-checkpointing", action="store_true")
 
     p.add_argument("--use-vllm-eval", action="store_true")
     p.add_argument("--vllm-device", type=str, default="cuda:1")
     p.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.8)
+    p.add_argument("--vllm-max-model-len", type=int, default=0)
+    p.add_argument("--vllm-max-num-seqs", type=int, default=0)
+    p.add_argument("--vllm-enforce-eager", action="store_true")
     p.add_argument("--eval-every-train-steps", type=int, default=50)
     p.add_argument("--eval-before-training", action="store_true")
     p.add_argument("--eval-batch-size", type=int, default=128)
@@ -669,12 +717,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="fixed_random",
         choices=["head", "fixed_random", "random"],
     )
-    p.add_argument("--eval-sampling-seed", type=int, default=0)
+    p.add_argument("--eval-sampling-seed", type=int, default=42)
     p.add_argument("--eval-max-tokens", type=int, default=1024)
     p.add_argument("--eval-temperature", type=float, default=1.0)
     p.add_argument("--eval-top-p", type=float, default=1.0)
 
     p.add_argument("--output-dir", type=str, default="")
+    p.add_argument("--save-model-dir", type=str, default="")
 
     p.add_argument("--wandb-project", type=str, default="")
     p.add_argument("--wandb-run-name", type=str, default="")
