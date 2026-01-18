@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 一个最小可用的 SFT 训练/评估脚本（面向 MATH/r1_zero 格式）。
 
@@ -11,6 +9,8 @@ from __future__ import annotations
 训练阶段使用 transformers 的 CausalLM，按 response token 的对数似然做监督学习。
 评估阶段可选使用 vLLM 进行更快的生成，并用 r1_zero_reward_fn 对格式/答案打分。
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -648,9 +648,10 @@ def train(args: argparse.Namespace) -> None:
                         "eval/train_step_at_eval": train_step,
                     }
                     log_row(eval_payload)
-                    _write_jsonl(
-                        run_dir / f"eval_samples_step_{eval_step}.jsonl", per_sample
-                    )
+                    if eval_step % 10 == 0:
+                        _write_jsonl(
+                            run_dir / f"eval_samples_step_{eval_step}.jsonl", per_sample
+                        )
                     if wandb_run is not None:
                         wandb.log(eval_payload)
 

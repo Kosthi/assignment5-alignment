@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 将 Hendrycks MATH（EleutherAI/hendrycks_math）数据集转换成适用于本作业 SFT 的 JSONL。
 
@@ -11,6 +9,8 @@ from __future__ import annotations
 1) 保留原 solution 的推理过程（去掉最后一个 \\boxed{...}）
 2) 将抽取到的最终答案写到 <answer> 标签内
 """
+
+from __future__ import annotations
 
 import argparse
 import json
