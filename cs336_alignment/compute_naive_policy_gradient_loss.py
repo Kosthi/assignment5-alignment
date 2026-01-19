@@ -18,4 +18,6 @@ def compute_naive_policy_gradient_loss(
         torch.Tensor Shape (batch_size, sequence_length), the per-token policy-gradient loss (to
                      be aggregated across the batch and sequence dimensions in the training loop).
     """
+    # Pytorch 优化器默认做最小化，而原始目标做最大化，希望 advantage 大于 0 的 log_prob 也越大（接近0），故取负号，使优化器目标与原始目标匹配
+    # -[-∞, 0] -> [0, +∞]
     return -raw_rewards_or_advantages * policy_log_probs
