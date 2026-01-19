@@ -140,7 +140,7 @@ def compute_policy_gradient_loss(
             metadata: dict, statistics from the underlying routine (e.g., clip fraction).
     """
     metadata = {}
-    
+
     if loss_type == "no_baseline":
         if raw_rewards is None:
             raise ValueError("`raw_rewards` are required for 'no_baseline' loss.")
@@ -165,3 +165,25 @@ def compute_policy_gradient_loss(
         raise ValueError(f"Unknown loss_type: {loss_type}")
 
     return loss, metadata
+
+
+def masked_mean(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    dim: int | None = None,
+) -> torch.Tensor:
+    """
+    Compute the mean of tensor along a given dimension, considering only those elements where
+    mask == 1.
+
+    Args:
+        tensor: torch.Tensor The data to be averaged.
+        mask: torch.Tensor Same shape as tensor; positions with 1 are included in the mean.
+        dim: int | None Dimension over which to average. If None, compute the mean over all
+             masked elements.
+
+    Returns:
+        torch.Tensor The masked mean; shape matches tensor.mean(dim) semantics.
+    """
+    mask_count = mask.sum(dim=dim)
+    return torch.sum(tensor * mask, dim=dim) / mask_count
