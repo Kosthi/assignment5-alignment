@@ -77,3 +77,38 @@ def compute_naive_policy_gradient_loss(
     # Pytorch 优化器默认做最小化，而原始目标做最大化，希望 advantage 大于 0 的 log_prob 也越大（接近0），故取负号，使优化器目标与原始目标匹配
     # -[-∞, 0] -> [0, +∞]
     return -raw_rewards_or_advantages * policy_log_probs
+
+
+def compute_grpo_clip_loss(
+    advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    cliprange: float,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Computes the GRPO (Group Relative Policy Optimization) per-token clip loss.
+
+    Args:
+        advantages (torch.Tensor): Shape (batch_size, 1). Per-example advantages A.
+            Note: This will likely need to be broadcasted to match the sequence length dimension.
+        policy_log_probs (torch.Tensor): Shape (batch_size, sequence_length). Per-token log
+            probs from the policy being trained.
+        old_log_probs (torch.Tensor): Shape (batch_size, sequence_length). Per-token log probs
+            from the old policy.
+        cliprange (float): Clip parameter ϵ (e.g., 0.2).
+
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]]:
+            - loss (torch.Tensor): Shape (batch_size, sequence_length). The per-token clipped loss.
+            - metadata (dict[str, torch.Tensor]): Dictionary containing logging info
+              (e.g., whether each token was clipped).
+    """
+    ratio = torch.exp(policy_log_probs - old_log_probs)
+    clamp_ratio = torch.clamp(ratio, 1 - cliprange, 1 + cliprange)
+    pg_loss1, pg_loss2 = ratio * advantages, clamp_ratio * advantages
+    # PPO 是否选择了裁剪后的值作为目标
+    clipped_mask = (pg_loss2 < pg_loss1).float()
+
+    return -torch.minimum(pg_loss1, pg_loss2), {
+        "clip_fraction": clipped_mask.mean().item(),
+    }
