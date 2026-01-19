@@ -12,6 +12,12 @@ from cs336_alignment.compute_entropy import compute_entropy
 from cs336_alignment.get_response_log_probs import get_response_log_probs
 from cs336_alignment.masked_normalize import masked_normalize
 from cs336_alignment.sft_microbatch_train_step import sft_microbatch_train_step
+from cs336_alignment.compute_group_normalized_rewards import (
+    compute_group_normalized_rewards,
+)
+from cs336_alignment.compute_naive_policy_gradient_loss import (
+    compute_naive_policy_gradient_loss,
+)
 
 
 def run_tokenize_prompt_and_output(
@@ -82,7 +88,14 @@ def run_compute_group_normalized_rewards(
                 You may choose what you wish to log here
                 (some statistics of the rewards, etc.).
     """
-    raise NotImplementedError
+    return compute_group_normalized_rewards(
+        reward_fn,
+        rollout_responses,
+        repeated_ground_truths,
+        group_size,
+        advantage_eps,
+        normalize_by_std,
+    )
 
 
 def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
@@ -138,7 +151,9 @@ def run_compute_naive_policy_gradient_loss(
         torch.Tensor of shape (batch_size, sequence_length):
             the policy gradient per-token loss.
     """
-    raise NotImplementedError
+    return compute_naive_policy_gradient_loss(
+        raw_rewards_or_advantages, policy_log_probs
+    )
 
 
 def run_compute_grpo_clip_loss(
