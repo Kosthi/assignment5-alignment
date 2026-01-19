@@ -16,6 +16,7 @@ from cs336_alignment.group_relative_policy_optimization import (
     compute_group_normalized_rewards,
     compute_naive_policy_gradient_loss,
     compute_grpo_clip_loss,
+    compute_policy_gradient_loss,
 )
 
 
@@ -195,7 +196,9 @@ def run_compute_policy_gradient_loss(
     """
     Wrapper that delegates to the appropriate policy gradient loss function above.
     """
-    raise NotImplementedError
+    return compute_policy_gradient_loss(
+        policy_log_probs, loss_type, raw_rewards, advantages, old_log_probs, cliprange
+    )
 
 
 def run_masked_mean(
