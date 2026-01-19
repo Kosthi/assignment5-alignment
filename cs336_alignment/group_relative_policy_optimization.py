@@ -217,10 +217,16 @@ def grpo_microbatch_train_step(
             loss: Scalar tensor (adjusted for gradient accumulation).
             metadata: Statistics from the underlying routines.
     """
+    # 1. 策略梯度损失计算
     loss, metadata = compute_policy_gradient_loss(
         policy_log_probs, loss_type, raw_rewards, advantages, old_log_probs, cliprange
     )
-    loss = masked_mean(loss, response_mask) / gradient_accumulation_steps
+    # 2. 带掩码的均值聚合
+    loss = masked_mean(loss, response_mask)
+    # 3. 梯度缩放
+    loss /= gradient_accumulation_steps
+
+    # 累积梯度
     loss.backward()
 
     return loss.detach(), metadata
