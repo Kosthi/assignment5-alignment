@@ -12,10 +12,8 @@ from cs336_alignment.compute_entropy import compute_entropy
 from cs336_alignment.get_response_log_probs import get_response_log_probs
 from cs336_alignment.masked_normalize import masked_normalize
 from cs336_alignment.sft_microbatch_train_step import sft_microbatch_train_step
-from cs336_alignment.compute_group_normalized_rewards import (
+from cs336_alignment.group_relative_policy_optimization import (
     compute_group_normalized_rewards,
-)
-from cs336_alignment.compute_naive_policy_gradient_loss import (
     compute_naive_policy_gradient_loss,
 )
 
