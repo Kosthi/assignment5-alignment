@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: Ruff Format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        pass_filenames: true
+
+      - id: ruff-check
+        name: Ruff Check
+        # --fix 会自动修复可修复的问题
+        # --exit-non-zero-on-fix 确保如果发生了修改，提交会中止（让你有机会检查修改并重新 add）
+        entry: uv run ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types: [python]
+        pass_filenames: true
