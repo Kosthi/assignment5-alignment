@@ -491,6 +491,7 @@ def _run_grpo_training_loop(
     wandb_run: Any,
 ) -> None:
     import torch
+    from tqdm import trange
 
     from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
     from cs336_alignment.get_response_log_probs import get_response_log_probs
@@ -510,7 +511,7 @@ def _run_grpo_training_loop(
     eval_step = 0
     last_log_time = time.time()
 
-    for grpo_step in range(1, cfg.n_grpo_steps + 1):
+    for grpo_step in trange(1, cfg.n_grpo_steps + 1, desc="GRPO", dynamic_ncols=True):
         batch_prompts_ex = rng.sample(train_examples, k=n_prompts_per_rollout_batch)
         batch_prompts = [
             _format_math_prompt(prompt_template, ex) for ex in batch_prompts_ex
