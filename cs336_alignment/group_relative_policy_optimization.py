@@ -221,9 +221,13 @@ def grpo_microbatch_train_step(
     loss, metadata = compute_policy_gradient_loss(
         policy_log_probs, loss_type, raw_rewards, advantages, old_log_probs, cliprange
     )
-    # 2. 带掩码的均值聚合
-    loss = masked_mean(loss, response_mask)
-    # 3. 梯度缩放
+    # 2. 带掩码的均值聚合 per example
+    # dim 为 None 也能通过测试，但与文档描述不符，算出来的 loss 偏小
+    loss = masked_mean(loss, response_mask, dim=-1)
+    # 3. average over the batch dim
+    loss = torch.mean(loss)
+
+    # 4. 梯度缩放
     loss /= gradient_accumulation_steps
 
     # 累积梯度
