@@ -1,0 +1,31 @@
+model_id: /path/to/your/hf_model
+train_jsonl: data/MATH/train.jsonl
+val_jsonl: data/MATH/val.jsonl
+output_dir: runs/grpo_math
+
+n_grpo_steps: 200
+learning_rate: 1e-5
+advantage_eps: 1e-6
+
+rollout_batch_size: 256
+group_size: 8
+sampling_temperature: 1.0
+sampling_top_p: 1.0
+sampling_min_tokens: 4
+sampling_max_tokens: 1024
+
+epochs_per_rollout_batch: 1
+train_batch_size: 256
+gradient_accumulation_steps: 128
+
+gpu_memory_utilization: 0.85
+
+# "no_baseline",
+# "reinforce_with_baseline",
+# "grpo_clip"
+loss_type: reinforce_with_baseline
+use_std_normalization: true
+
+eval_every_grpo_steps: 10
+eval_max_examples: 1024
+eval_batch_size: 128

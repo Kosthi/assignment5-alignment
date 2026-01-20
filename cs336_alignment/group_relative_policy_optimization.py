@@ -9,6 +9,7 @@ def compute_group_normalized_rewards(
     group_size: int,
     advantage_eps: float,
     normalize_by_std: bool,
+    device=None,
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, float]]:
     """
     Compute rewards for each group of rollout responses, normalized by the group size.
@@ -34,11 +35,17 @@ def compute_group_normalized_rewards(
             - metadata: your choice of other statistics to log (e.g. mean, std, max/min of rewards).
     """
     raw_rewards = []
+    format_rewards = []
+    answer_rewards = []
     for resp, gt in zip(rollout_responses, repeated_ground_truths, strict=True):
         scores = reward_fn(resp, gt)
+        format_rewards.append(scores["format_reward"])
+        answer_rewards.append(scores["answer_reward"])
         raw_rewards.append(scores["reward"])
 
-    raw_rewards = torch.tensor(raw_rewards, dtype=torch.float32)
+    format_rewards = torch.tensor(format_rewards, dtype=torch.float32, device=device)
+    answer_rewards = torch.tensor(answer_rewards, dtype=torch.float32, device=device)
+    raw_rewards = torch.tensor(raw_rewards, dtype=torch.float32, device=device)
 
     grouped_rewards = raw_rewards.reshape(-1, group_size)
 
@@ -53,7 +60,11 @@ def compute_group_normalized_rewards(
     return (
         advantages.reshape(-1),
         raw_rewards,
-        {"reward_mean", raw_rewards.mean().item()},
+        {
+            "format_rewards_mean": format_rewards.mean().item(),
+            "answer_rewards_mean": answer_rewards.mean().item(),
+            "rewards_mean": raw_rewards.mean().item(),
+        },
     )
 
 
@@ -110,7 +121,7 @@ def compute_grpo_clip_loss(
     clipped_mask = (pg_loss2 < pg_loss1).float()
 
     return -torch.minimum(pg_loss1, pg_loss2), {
-        "clip_fraction": clipped_mask.mean().item(),
+        "clipped_mask": clipped_mask,
     }
 
 

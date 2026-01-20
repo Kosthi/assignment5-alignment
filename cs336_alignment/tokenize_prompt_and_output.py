@@ -7,6 +7,7 @@ def tokenize_prompt_and_output(
     output_strs: list[str],
     tokenizer: PreTrainedTokenizerBase,
     max_seq_length: int | None = None,
+    device=None,
 ):
     """
     对提示词和输出字符串进行分词，构建响应 tokens 对应的掩码（1 表示响应 tokens，0 表示其他 tokens）。
@@ -15,6 +16,8 @@ def tokenize_prompt_and_output(
         prompt_strs: list[str] - 提示词字符串列表
         output_strs: list[str] - 输出字符串列表
         tokenizer: PreTrainedTokenizer - 用于分词的分词器
+        max_seq_length: int | None = None - 最大句子长度
+        device = None - 设备
 
     返回：
         dict[str, torch.Tensor] - 包含以下键的字典：
@@ -31,7 +34,7 @@ def tokenize_prompt_and_output(
     batch_size = len(prompt_strs)
     if batch_size == 0:
         # 空 batch：直接返回空张量，保持接口一致
-        empty = torch.empty((0, 0), dtype=torch.long)
+        empty = torch.empty((0, 0), dtype=torch.long, device=device)
         return {
             "input_ids": empty,
             "labels": empty,
@@ -84,12 +87,12 @@ def tokenize_prompt_and_output(
     # 将 full token 序列转为张量后，做标准的 causal LM shift：
     # - input_ids: 去掉最后一个 token
     # - labels: 去掉第一个 token（预测下一个 token）
-    full_input = torch.tensor(full_ids_list, dtype=torch.long)
+    full_input = torch.tensor(full_ids_list, dtype=torch.long, device=device)
     input_ids = full_input[:, :-1]
     labels = full_input[:, 1:]
 
     seq_len = max(max_full_len - 1, 0)
-    response_mask = torch.zeros((batch_size, seq_len), dtype=torch.bool)
+    response_mask = torch.zeros((batch_size, seq_len), dtype=torch.bool, device=device)
     # 掩码是对 labels 而言的
     for i, (prompt_len, output_len) in enumerate(
         zip(prompt_lens, output_lens, strict=True)
