@@ -169,3 +169,4 @@ cython_debug/
 math_zero_shot_outputs.jsonl
 runs
 **/.DS_Store
+wandb
