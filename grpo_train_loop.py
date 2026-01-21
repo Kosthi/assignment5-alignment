@@ -132,8 +132,42 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 def _config_from_dict(data: dict[str, Any]) -> TrainConfig:
     # 仅允许 TrainConfig 中声明的字段，避免 YAML 里拼错字段时悄悄生效/污染
-    allowed = {f.name for f in fields(TrainConfig)}
-    filtered = {k: v for k, v in data.items() if k in allowed}
+    allowed_fields = {f.name: f for f in fields(TrainConfig)}
+    filtered = {k: v for k, v in data.items() if k in allowed_fields}
+
+    def is_float_type(t: Any) -> bool:
+        return t is float or t == "float"
+
+    def is_int_type(t: Any) -> bool:
+        return t is int or t == "int"
+
+    def is_bool_type(t: Any) -> bool:
+        return t is bool or t == "bool"
+
+    def coerce_scalar(name: str, value: Any) -> Any:
+        t = allowed_fields[name].type
+        if is_float_type(t) and isinstance(value, str):
+            try:
+                return float(value)
+            except Exception as e:
+                raise ValueError(
+                    f"配置字段 {name} 期望 float，但得到: {value!r}"
+                ) from e
+        if is_int_type(t) and isinstance(value, str):
+            try:
+                return int(value)
+            except Exception as e:
+                raise ValueError(f"配置字段 {name} 期望 int，但得到: {value!r}") from e
+        if is_bool_type(t) and isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "y", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "n", "off"}:
+                return False
+            raise ValueError(f"配置字段 {name} 期望 bool，但得到: {value!r}")
+        return value
+
+    filtered = {k: coerce_scalar(k, v) for k, v in filtered.items()}
     # 这些字段是必须提供的（不设默认值）
     missing = [k for k in ("model_id", "train_jsonl", "val_jsonl") if k not in filtered]
     if missing:
@@ -462,12 +496,18 @@ def _init_optimizer(cfg: TrainConfig, policy: PreTrainedModel):
 def _init_llm_if_enabled(cfg: TrainConfig):
     if not cfg.use_vllm:
         return None
+    required_max_num_seqs = max(cfg.rollout_batch_size, cfg.eval_batch_size)
+    max_num_seqs = (
+        int(cfg.vllm_max_num_seqs)
+        if cfg.vllm_max_num_seqs and cfg.vllm_max_num_seqs > 0
+        else int(required_max_num_seqs)
+    )
     return _init_vllm_instance(
         model_id=cfg.model_id,
         device=cfg.vllm_device,
         gpu_memory_utilization=cfg.vllm_gpu_memory_utilization,
         max_model_len=cfg.vllm_max_model_len,
-        max_num_seqs=cfg.vllm_max_num_seqs,
+        max_num_seqs=max_num_seqs,
         enforce_eager=cfg.vllm_enforce_eager,
     )
 
@@ -635,11 +675,13 @@ def _run_grpo_training_loop(
 
                 accum_loss_sum += float(loss.item())
                 accum_microbatches += 1
-                accum_resp_tokens += mb_response_mask.sum(dim=-1).mean().item()
+                accum_resp_tokens += mb_response_mask.sum(dim=-1).float().mean().item()
 
                 if "clipped_mask" in loss_md:
                     clip_fraction = (
-                        masked_mean(loss_md["clipped_mask"], mb_response_mask, dim=-1)
+                        masked_mean(
+                            loss_md["clipped_mask"].float(), mb_response_mask, dim=-1
+                        )
                         .mean()
                         .item()
                     )

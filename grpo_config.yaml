@@ -1,7 +1,7 @@
-model_id: /path/to/your/hf_model
+model_id: /root/autodl-tmp/Qwen2.5-Math-1.5B
 train_jsonl: data/MATH/train.jsonl
-val_jsonl: data/MATH/val.jsonl
-output_dir: runs/grpo_math
+val_jsonl: data/MATH/validation.jsonl
+output_dir: runs/grpo_loop_test-1
 
 n_grpo_steps: 200
 learning_rate: 1e-5
@@ -18,7 +18,7 @@ epochs_per_rollout_batch: 1
 train_batch_size: 256
 gradient_accumulation_steps: 128
 
-gpu_memory_utilization: 0.85
+vllm_gpu_memory_utilization: 0.75
 
 # "no_baseline",
 # "reinforce_with_baseline",
@@ -28,4 +28,4 @@ use_std_normalization: true
 
 eval_every_grpo_steps: 10
 eval_max_examples: 1024
-eval_batch_size: 128
+eval_batch_size: 256
