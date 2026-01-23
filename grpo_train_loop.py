@@ -14,6 +14,8 @@ import json
 import os
 import random
 import time
+import logging
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -35,6 +37,13 @@ app = typer.Typer(add_completion=False)
 
 # loss_type 由作业指定：无 baseline / REINFORCE+组内 baseline / GRPO-Clip（PPO-style ratio clipping）
 LossType = Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"]
+
+
+# 配置一个简易的 logger，确保能打印到控制台
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - [DEBUG] - %(message)s", datefmt="%H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -82,14 +91,14 @@ class TrainConfig:
     cliprange: float = 0.2
 
     # ===== 设备与 vLLM 配置 =====
-    policy_device: str = "cuda:0"
+    policy_device: str = "cuda:1"
     use_vllm: bool = True
-    vllm_device: str = "cuda:1"
+    vllm_device: str = "cuda:0"
     vllm_gpu_memory_utilization: float = 0.85
     # vLLM 最大上下文；建议与 max_seq_length、sampling_max_tokens 合理匹配
     vllm_max_model_len: int = 2048
     # vLLM 一次最多并发多少序列（影响显存与吞吐）
-    vllm_max_num_seqs: int = 2048
+    vllm_max_num_seqs: int = 1024
     vllm_enforce_eager: bool = False
 
     # r1_zero prompt 模板（必须包含 {question} 占位符，且以 “Assistant: <think>” 结尾）
@@ -244,6 +253,75 @@ def _maybe_init_wandb(
     return run
 
 
+# def _init_vllm_instance(
+#     model_id: str,
+#     device: str,
+#     gpu_memory_utilization: float,
+#     max_model_len: int,
+#     max_num_seqs: int,
+#     enforce_eager: bool,
+# ):
+#     # vLLM 用于 fast rollout / eval：我们会把 transformers policy 权重同步到 vLLM 实例后再生成
+#     os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+#     try:
+#         from vllm import LLM  # type: ignore
+#     except Exception as e:
+#         raise RuntimeError("vLLM 不可用：请在支持 vLLM 的环境中运行。") from e
+
+#     world_size_patch = patch("torch.distributed.get_world_size", return_value=1)
+#     profiling_patch_targets = [
+#         "vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling",
+#         "vllm.worker.worker_base.WorkerBase._assert_memory_footprint_increased_during_profiling",
+#         "vllm.worker.worker_base.WorkerWrapperBase._assert_memory_footprint_increased_during_profiling",
+#     ]
+#     with ExitStack() as stack:
+#         stack.enter_context(world_size_patch)
+#         for target in profiling_patch_targets:
+#             try:
+#                 stack.enter_context(patch(target, return_value=None))
+#             except Exception:
+#                 pass
+#         llm_kwargs: dict[str, Any] = {}
+#         if max_model_len and max_model_len > 0:
+#             llm_kwargs["max_model_len"] = int(max_model_len)
+#         if max_num_seqs and max_num_seqs > 0:
+#             llm_kwargs["max_num_seqs"] = int(max_num_seqs)
+#         if enforce_eager:
+#             llm_kwargs["enforce_eager"] = True
+#         llm_init_kwargs: dict[str, Any] = dict(
+#             model=model_id,
+#             dtype="bfloat16",
+#             enable_prefix_caching=True,
+#             gpu_memory_utilization=gpu_memory_utilization,
+#             trust_remote_code=True,
+#             **llm_kwargs,
+#         )
+
+#         if isinstance(device, str) and device.startswith("cuda:"):
+#             cuda_index = device.split(":", 1)[1]
+#             if cuda_index.isdigit():
+#                 # --- 修改开始 ---
+#                 # 1. 获取旧的环境变量用于恢复
+#                 prev_env = os.environ.get("CUDA_VISIBLE_DEVICES")
+
+#                 # 2. 强行只让 vLLM 看到这一张卡
+#                 # 注意：这会暂时屏蔽掉该进程对其他显卡的访问，但 vLLM 初始化完就恢复了
+#                 os.environ["CUDA_VISIBLE_DEVICES"] = cuda_index
+
+#                 try:
+#                     # vLLM 现在认为世界上只有一张卡，它会用那张卡（也就是你的 cuda_index）
+#                     return LLM(**llm_init_kwargs)
+#                 finally:
+#                     # 3. 恢复现场，以免影响后续代码（比如训练代码需要看到所有卡）
+#                     if prev_env is None:
+#                         os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+#                     else:
+#                         os.environ["CUDA_VISIBLE_DEVICES"] = prev_env
+#                 # --- 修改结束 ---
+
+#         return LLM(**llm_init_kwargs)
+
+
 def _init_vllm_instance(
     model_id: str,
     device: str,
@@ -252,21 +330,33 @@ def _init_vllm_instance(
     max_num_seqs: int,
     enforce_eager: bool,
 ):
-    # vLLM 用于 fast rollout / eval：我们会把 transformers policy 权重同步到 vLLM 实例后再生成
-    import torch
+    # vLLM 用于 fast rollout / eval
+    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+
+    # [日志 1] 打印当前进程 ID 和请求的目标设备
+    logger.info(f"正在初始化 vLLM 实例... PID: {os.getpid()}")
+    logger.info(f"请求目标设备: {device} | 模型: {model_id}")
 
     try:
         from vllm import LLM  # type: ignore
     except Exception as e:
-        raise RuntimeError("vLLM 不可用：请在支持 vLLM 的环境中运行。") from e
+        raise RuntimeError("vLLM 不可用") from e
 
-    # 这两个 patch 用于绕过某些 vLLM 初始化时对分布式环境/显存 profiling 的假设
     world_size_patch = patch("torch.distributed.get_world_size", return_value=1)
-    profiling_patch = patch(
+    profiling_patch_targets = [
         "vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling",
-        return_value=None,
-    )
-    with world_size_patch, profiling_patch:
+        "vllm.worker.worker_base.WorkerBase._assert_memory_footprint_increased_during_profiling",
+        "vllm.worker.worker_base.WorkerWrapperBase._assert_memory_footprint_increased_during_profiling",
+    ]
+
+    with ExitStack() as stack:
+        stack.enter_context(world_size_patch)
+        for target in profiling_patch_targets:
+            try:
+                stack.enter_context(patch(target, return_value=None))
+            except Exception:
+                pass
+
         llm_kwargs: dict[str, Any] = {}
         if max_model_len and max_model_len > 0:
             llm_kwargs["max_model_len"] = int(max_model_len)
@@ -274,21 +364,91 @@ def _init_vllm_instance(
             llm_kwargs["max_num_seqs"] = int(max_num_seqs)
         if enforce_eager:
             llm_kwargs["enforce_eager"] = True
-        return LLM(
+
+        llm_init_kwargs: dict[str, Any] = dict(
             model=model_id,
-            device=device,
-            dtype=torch.bfloat16,
+            dtype="bfloat16",
             enable_prefix_caching=True,
             gpu_memory_utilization=gpu_memory_utilization,
             trust_remote_code=True,
             **llm_kwargs,
         )
 
+        if isinstance(device, str) and device.startswith("cuda:"):
+            cuda_index_str = device.split(":", 1)[1]
+            if cuda_index_str.isdigit():
+                target_gpu_id = int(cuda_index_str)
+
+                # [日志 2] 初始化前的显存快照 (用于对比)
+                try:
+                    mem_before = torch.cuda.memory_allocated(target_gpu_id) / 1024**3
+                    logger.info(
+                        f">>> 初始化前: 物理显卡 GPU-{target_gpu_id} 已用显存: {mem_before:.2f} GB"
+                    )
+                except Exception as e:
+                    logger.warning(f"无法获取 GPU-{target_gpu_id} 显存信息: {e}")
+
+                # 1. 获取旧的环境变量
+                prev_env = os.environ.get("CUDA_VISIBLE_DEVICES")
+
+                # 2. 修改环境变量
+                os.environ["CUDA_VISIBLE_DEVICES"] = cuda_index_str
+
+                # [日志 3] 确认屏蔽生效
+                logger.info(
+                    f"已设置 CUDA_VISIBLE_DEVICES='{os.environ['CUDA_VISIBLE_DEVICES']}'"
+                )
+                logger.info(
+                    f"vLLM 此时应该只能看到 1 张卡 (逻辑 ID 0 -> 物理 ID {target_gpu_id})"
+                )
+
+                try:
+                    llm_instance = LLM(**llm_init_kwargs)
+                    logger.info("vLLM 初始化完成 (对象已创建)")
+                    return llm_instance
+                finally:
+                    # 3. 恢复现场
+                    if prev_env is None:
+                        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+                        logger.info("已移除 CUDA_VISIBLE_DEVICES (恢复默认)")
+                    else:
+                        os.environ["CUDA_VISIBLE_DEVICES"] = prev_env
+                        logger.info(f"已恢复 CUDA_VISIBLE_DEVICES='{prev_env}'")
+
+                    # [日志 4] 初始化后的显存快照 (关键证据)
+                    # 只有在这里恢复了环境变量，才能再次访问该物理 GPU 查看显存
+                    try:
+                        mem_after = torch.cuda.memory_allocated(target_gpu_id) / 1024**3
+                        logger.info(
+                            f">>> 初始化后: 物理显卡 GPU-{target_gpu_id} 已用显存: {mem_after:.2f} GB"
+                        )
+
+                        if mem_after - mem_before > 1.0:  # 如果增加了超过 1GB
+                            logger.info(
+                                f"✅ 成功验证: 模型确实加载到了 GPU-{target_gpu_id}"
+                            )
+                        else:
+                            logger.error(
+                                f"❌ 警告: GPU-{target_gpu_id} 显存几乎未变化! 请检查模型是否加载到了默认的 GPU-0 ?"
+                            )
+                    except Exception as e:
+                        logger.error(f"验证显存时发生错误: {e}")
+
+        # Fallback for CPU or other devices
+        logger.info(f"未使用 CUDA 隔离逻辑，直接初始化 LLM (device={device})")
+        return LLM(**llm_init_kwargs)
+
 
 def _load_policy_into_vllm_instance(policy: PreTrainedModel, llm) -> None:
     # vLLM 维护独立权重；每次 rollout/eval 前把当前 policy 的参数复制进去（CPU 中转，较稳妥）
     state_dict = {k: v.detach().to("cpu") for k, v in policy.state_dict().items()}
-    llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    engine = getattr(llm, "llm_engine", None)
+    if engine is None or not hasattr(engine, "model_executor"):
+        raise RuntimeError(
+            "当前 vLLM 配置启用了多进程引擎，无法在训练循环中同步 policy 权重到 vLLM。"
+            "请设置环境变量 VLLM_ENABLE_V1_MULTIPROCESSING=0 后重试。"
+        )
+    llm_model = engine.model_executor.driver_worker.model_runner.model
     llm_model.load_weights(state_dict.items())
 
 
