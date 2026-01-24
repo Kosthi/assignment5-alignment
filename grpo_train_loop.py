@@ -340,6 +340,7 @@ def _init_vllm_instance(
 
     try:
         from vllm import LLM  # type: ignore
+        import torch
     except Exception as e:
         raise RuntimeError("vLLM 不可用") from e
 
@@ -637,6 +638,8 @@ def _init_policy_and_tokenizer(cfg: TrainConfig) -> tuple[PreTrainedModel, Any, 
         attn_implementation="flash_attention_2",
         device_map=policy_device, # 直接创建在 gpu 上
     )
+    # 通过 JIT（即时编译）将代码转换成高度优化的内核，加速训练
+    policy = torch.compile(policy, mode="max-autotune", backend="inductor")
     # 创建策略模型的分词器
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, trust_remote_code=True)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
