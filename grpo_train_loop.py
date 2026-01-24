@@ -98,6 +98,7 @@ class TrainConfig:
     # vLLM 最大上下文；建议与 max_seq_length、sampling_max_tokens 合理匹配
     vllm_max_model_len: int = 2048
     # vLLM 一次最多并发多少序列（影响显存与吞吐）
+    # 实际上就是 maximum batch size
     vllm_max_num_seqs: int = 1024
     vllm_enforce_eager: bool = False
 
@@ -626,18 +627,22 @@ def _init_policy_and_tokenizer(cfg: TrainConfig) -> tuple[PreTrainedModel, Any, 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    # 创建设备对象
+    policy_device = torch.device(cfg.policy_device)
+    # 创建策略模型
     policy = AutoModelForCausalLM.from_pretrained(
         cfg.model_id,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
         attn_implementation="flash_attention_2",
+        device_map=policy_device, # 直接创建在 gpu 上
     )
+    # 创建策略模型的分词器
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, trust_remote_code=True)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    policy_device = torch.device(cfg.policy_device)
-    policy.to(policy_device)
+    # 进入训练模式
     policy.train()
     return policy, tokenizer, policy_device
 
