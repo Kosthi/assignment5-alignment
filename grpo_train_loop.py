@@ -101,6 +101,7 @@ class TrainConfig:
     # 实际上就是 maximum batch size
     vllm_max_num_seqs: int = 1024
     vllm_enforce_eager: bool = False
+    enable_torch_compile: bool = True
 
     # r1_zero prompt 模板（必须包含 {question} 占位符，且以 “Assistant: <think>” 结尾）
     prompt_template_path: str = str(
@@ -379,71 +380,45 @@ def _init_vllm_instance(
         if isinstance(device, str) and device.startswith("cuda:"):
             cuda_index_str = device.split(":", 1)[1]
             if cuda_index_str.isdigit():
-                target_gpu_id = int(cuda_index_str)
-
-                # [日志 2] 初始化前的显存快照 (用于对比)
-                try:
-                    mem_before = torch.cuda.memory_allocated(target_gpu_id) / 1024**3
-                    logger.info(
-                        f">>> 初始化前: 物理显卡 GPU-{target_gpu_id} 已用显存: {mem_before:.2f} GB"
-                    )
-                except Exception as e:
-                    logger.warning(f"无法获取 GPU-{target_gpu_id} 显存信息: {e}")
-
-                # 1. 获取旧的环境变量
                 prev_env = os.environ.get("CUDA_VISIBLE_DEVICES")
+                prev_cuda_device: int | None = None
+                if torch.cuda.is_available():
+                    try:
+                        prev_cuda_device = int(torch.cuda.current_device())
+                    except Exception:
+                        prev_cuda_device = None
 
-                # 2. 修改环境变量
                 os.environ["CUDA_VISIBLE_DEVICES"] = cuda_index_str
-
-                # [日志 3] 确认屏蔽生效
-                logger.info(
-                    f"已设置 CUDA_VISIBLE_DEVICES='{os.environ['CUDA_VISIBLE_DEVICES']}'"
-                )
-                logger.info(
-                    f"vLLM 此时应该只能看到 1 张卡 (逻辑 ID 0 -> 物理 ID {target_gpu_id})"
-                )
-
                 try:
+                    if torch.cuda.is_available():
+                        torch.cuda.set_device(0)
                     llm_instance = LLM(**llm_init_kwargs)
                     logger.info("vLLM 初始化完成 (对象已创建)")
                     return llm_instance
                 finally:
-                    # 3. 恢复现场
                     if prev_env is None:
                         os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-                        logger.info("已移除 CUDA_VISIBLE_DEVICES (恢复默认)")
                     else:
                         os.environ["CUDA_VISIBLE_DEVICES"] = prev_env
-                        logger.info(f"已恢复 CUDA_VISIBLE_DEVICES='{prev_env}'")
+                    if torch.cuda.is_available() and prev_cuda_device is not None:
+                        try:
+                            torch.cuda.set_device(prev_cuda_device)
+                        except Exception:
+                            torch.cuda.set_device(0)
 
-                    # [日志 4] 初始化后的显存快照 (关键证据)
-                    # 只有在这里恢复了环境变量，才能再次访问该物理 GPU 查看显存
-                    try:
-                        mem_after = torch.cuda.memory_allocated(target_gpu_id) / 1024**3
-                        logger.info(
-                            f">>> 初始化后: 物理显卡 GPU-{target_gpu_id} 已用显存: {mem_after:.2f} GB"
-                        )
-
-                        if mem_after - mem_before > 1.0:  # 如果增加了超过 1GB
-                            logger.info(
-                                f"✅ 成功验证: 模型确实加载到了 GPU-{target_gpu_id}"
-                            )
-                        else:
-                            logger.error(
-                                f"❌ 警告: GPU-{target_gpu_id} 显存几乎未变化! 请检查模型是否加载到了默认的 GPU-0 ?"
-                            )
-                    except Exception as e:
-                        logger.error(f"验证显存时发生错误: {e}")
-
-        # Fallback for CPU or other devices
-        logger.info(f"未使用 CUDA 隔离逻辑，直接初始化 LLM (device={device})")
-        return LLM(**llm_init_kwargs)
+        llm_instance = LLM(**llm_init_kwargs)
+        logger.info("vLLM 初始化完成 (对象已创建)")
+        return llm_instance
 
 
 def _load_policy_into_vllm_instance(policy: PreTrainedModel, llm) -> None:
     # vLLM 维护独立权重；每次 rollout/eval 前把当前 policy 的参数复制进去（CPU 中转，较稳妥）
-    state_dict = {k: v.detach().to("cpu") for k, v in policy.state_dict().items()}
+    state_dict: dict[str, Any] = {}
+    for k, v in policy.state_dict().items():
+        nk = k.replace("._orig_mod.", ".")
+        if nk.startswith("_orig_mod."):
+            nk = nk[len("_orig_mod.") :]
+        state_dict[nk] = v.detach().to("cpu")
     engine = getattr(llm, "llm_engine", None)
     if engine is None or not hasattr(engine, "model_executor"):
         raise RuntimeError(
@@ -628,8 +603,18 @@ def _init_policy_and_tokenizer(cfg: TrainConfig) -> tuple[PreTrainedModel, Any, 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    torch.set_float32_matmul_precision("high")
     # 创建设备对象
     policy_device = torch.device(cfg.policy_device)
+    if policy_device.type == "cuda" and policy_device.index is not None:
+        if not torch.cuda.is_available():
+            raise RuntimeError("policy_device 指定为 CUDA，但当前环境检测不到可用 CUDA。")
+        n_devices = torch.cuda.device_count()
+        if policy_device.index >= n_devices:
+            logger.warning(
+                f"policy_device={cfg.policy_device} 不存在 (可见 CUDA 设备数={n_devices})，将回退到 cuda:0"
+            )
+            policy_device = torch.device("cuda:0")
     # 创建策略模型
     policy = AutoModelForCausalLM.from_pretrained(
         cfg.model_id,
@@ -638,8 +623,13 @@ def _init_policy_and_tokenizer(cfg: TrainConfig) -> tuple[PreTrainedModel, Any, 
         attn_implementation="flash_attention_2",
         device_map=policy_device, # 直接创建在 gpu 上
     )
-    # 通过 JIT（即时编译）将代码转换成高度优化的内核，加速训练
-    policy = torch.compile(policy, mode="max-autotune", backend="inductor")
+
+    if cfg.enable_torch_compile:
+        if hasattr(policy, "model"):
+            policy.model = torch.compile(policy.model)
+        else:
+            policy.base_model = torch.compile(policy.base_model)
+
     # 创建策略模型的分词器
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, trust_remote_code=True)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
@@ -664,6 +654,21 @@ def _init_optimizer(cfg: TrainConfig, policy: PreTrainedModel):
 def _init_llm_if_enabled(cfg: TrainConfig):
     if not cfg.use_vllm:
         return None
+    if isinstance(cfg.vllm_device, str) and cfg.vllm_device.startswith("cuda:"):
+        try:
+            import torch
+
+            idx_str = cfg.vllm_device.split(":", 1)[1]
+            if idx_str.isdigit() and torch.cuda.is_available():
+                idx = int(idx_str)
+                n_devices = torch.cuda.device_count()
+                if idx >= n_devices:
+                    logger.warning(
+                        f"vllm_device={cfg.vllm_device} 不存在 (可见 CUDA 设备数={n_devices})，将回退到 cuda:0"
+                    )
+                    cfg = TrainConfig(**{**asdict(cfg), "vllm_device": "cuda:0"})
+        except Exception:
+            pass
     required_max_num_seqs = max(cfg.rollout_batch_size, cfg.eval_batch_size)
     max_num_seqs = (
         int(cfg.vllm_max_num_seqs)
