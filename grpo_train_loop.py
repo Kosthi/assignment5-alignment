@@ -782,7 +782,8 @@ def _run_grpo_training_loop(
         if cfg.loss_type == "grpo_clip":
             # 切换评估模式，计算旧策略的对数概率
             policy.eval()
-            with torch.no_grad():
+            # 开启推理模式上下文
+            with torch.inference_mode():
                 old_log_probs = get_response_log_probs(
                     model=policy,
                     input_ids=input_ids,
